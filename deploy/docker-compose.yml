@@ -1,0 +1,71 @@
+name: gantry
+
+# Compose runs ONLY the stateful/proxy infra. controld + web run as native host
+# processes in dev (see SPEC.md §5, D6). All resources are gantry-labeled so
+# `make nuke` and every prune stays scoped to this project.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: gantry-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gantry}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gantry_dev_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-gantry}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - gantry-pgdata:/var/lib/postgresql/data
+    networks:
+      - gantry-core
+    labels:
+      dev.gantry.managed: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gantry} -d ${POSTGRES_DB:-gantry}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  caddy:
+    image: caddy:2.8
+    container_name: gantry-caddy
+    restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/bootstrap.json"]
+    ports:
+      - "${GANTRY_HTTP_PORT:-80}:80"
+      - "127.0.0.1:2019:2019"
+    volumes:
+      - ./caddy-bootstrap.json:/etc/caddy/bootstrap.json:ro
+      - gantry-caddy-data:/data
+    # On real Linux/WSL this maps host.docker.internal to the host gateway.
+    # On Docker Desktop the name already resolves; this is a harmless no-op (D9).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - gantry-core
+      - gantry-apps
+    labels:
+      dev.gantry.managed: "true"
+
+networks:
+  # caddy + postgres. App containers MUST NOT join this network (SPEC.md §5).
+  gantry-core:
+    name: gantry-core
+    labels:
+      dev.gantry.managed: "true"
+  # caddy + every deployed app container; Docker DNS resolves <container> here.
+  gantry-apps:
+    name: gantry-apps
+    labels:
+      dev.gantry.managed: "true"
+
+volumes:
+  gantry-pgdata:
+    name: gantry-pgdata
+    labels:
+      dev.gantry.managed: "true"
+  gantry-caddy-data:
+    name: gantry-caddy-data
+    labels:
+      dev.gantry.managed: "true"
