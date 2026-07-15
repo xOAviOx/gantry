@@ -1,0 +1,25 @@
+# Force LF for all text so files built on Windows stay POSIX-clean inside Linux containers.
+* text=auto eol=lf
+
+# Explicitly LF for scripts/config that MUST be LF (shebangs, Dockerfiles, YAML, JSON).
+*.sh        text eol=lf
+*.go        text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+Makefile    text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.css       text eol=lf
+*.md        text eol=lf
+
+# Binaries
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff2 binary

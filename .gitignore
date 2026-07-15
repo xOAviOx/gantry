@@ -1,0 +1,31 @@
+# Secrets / local env
+.env
+deploy/.env
+*.local
+
+# Go
+services/controld/controld
+services/controld/controld.exe
+*.test
+*.out
+coverage.out
+
+# Node / Next.js
+node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/next-env.d.ts
+*.tsbuildinfo
+.pnpm-store/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build / tmp
+/tmp/
+*.log
+dist/
