@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS webhook_deliveries;
+DROP TABLE IF EXISTS env_vars;
+DROP TABLE IF EXISTS log_lines;
+DROP TABLE IF EXISTS jobs;
+DROP TABLE IF EXISTS deployments;
+DROP TABLE IF EXISTS projects;
