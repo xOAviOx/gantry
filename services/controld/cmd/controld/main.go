@@ -112,7 +112,7 @@ func run() error {
 	// HTTP server.
 	srv := &http.Server{
 		Addr:    cfg.ControldAddr,
-		Handler: api.NewRouter(&api.Server{Logger: logger, Pool: pool, Cfg: cfg}),
+		Handler: api.NewRouter(&api.Server{Logger: logger, Pool: pool, Cfg: cfg, Hub: hub}),
 	}
 	errCh := make(chan error, 1)
 	go func() {

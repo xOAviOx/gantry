@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/avishuklacode/gantry/services/controld/internal/config"
+	"github.com/avishuklacode/gantry/services/controld/internal/logs"
 )
 
 // Server carries handler dependencies (injected; no package-level state).
@@ -18,6 +19,7 @@ type Server struct {
 	Logger *slog.Logger
 	Pool   *pgxpool.Pool
 	Cfg    config.Config
+	Hub    *logs.Hub
 }
 
 // NewRouter wires middleware and routes. Public: healthz, login, webhooks (M3).
@@ -41,7 +43,8 @@ func NewRouter(s *Server) http.Handler {
 			r.Post("/projects/{id}/deploy", s.handleDeployProject)
 
 			r.Get("/deployments/{id}", s.handleGetDeployment)
-			r.Get("/deployments/{id}/logs", s.handleGetLogs)
+			r.Get("/deployments/{id}/logs", s.handleStreamLogs)     // SSE, Last-Event-ID resume
+			r.Get("/deployments/{id}/events", s.handleStreamEvents) // SSE status stream
 		})
 	})
 
