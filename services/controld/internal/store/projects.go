@@ -68,8 +68,11 @@ func ListProjects(ctx context.Context, q DBTX) ([]Project, error) {
 // ListProjectsWithStatus returns every project decorated with its most recent
 // deployment status, the currently-live deployment id (if any), and last deploy time.
 func ListProjectsWithStatus(ctx context.Context, q DBTX) ([]ProjectWithStatus, error) {
+	// Project columns must be table-qualified here: the joins below expose a
+	// second `id` (live.id) and `created_at` (latest.created_at), so the shared
+	// unqualified projectCols would be ambiguous (SQLSTATE 42702).
 	const sql = `
-		SELECT ` + projectCols + `,
+		SELECT p.id::text, p.name, p.slug, p.repo_url, p.branch, p.dockerfile_path, p.port, p.health_path, p.created_at,
 			COALESCE(latest.status, '') AS live_status,
 			live.id::text                AS live_deployment_id,
 			latest.created_at            AS last_deploy_at
