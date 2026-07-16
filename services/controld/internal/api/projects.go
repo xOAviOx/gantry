@@ -123,8 +123,12 @@ func (s *Server) handleDeployProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := queue.Enqueue(r.Context(), s.Pool, "build_deploy",
-		map[string]any{"deployment_id": dep.ID}, queue.EnqueueOpts{}); err != nil {
+	// Newest deploy wins: this supersedes any queued build for the project and
+	// asks a running one to stop (SPEC.md §7).
+	if _, err := queue.EnqueueDeploy(r.Context(), s.Pool, queue.DeployJob{
+		DeploymentID: dep.ID,
+		ProjectID:    proj.ID,
+	}, queue.EnqueueOpts{}); err != nil {
 		writeErr(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}

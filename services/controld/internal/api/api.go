@@ -30,6 +30,9 @@ func NewRouter(s *Server) http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(s.Logger))
 
+	// GitHub webhook: no auth middleware — authenticity is the HMAC signature.
+	r.Post("/webhooks/github", s.handleGitHubWebhook)
+
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/healthz", s.handleHealthz)
 		r.Post("/login", s.handleLogin)
@@ -45,6 +48,7 @@ func NewRouter(s *Server) http.Handler {
 			r.Get("/deployments/{id}", s.handleGetDeployment)
 			r.Get("/deployments/{id}/logs", s.handleStreamLogs)     // SSE, Last-Event-ID resume
 			r.Get("/deployments/{id}/events", s.handleStreamEvents) // SSE status stream
+			r.Post("/deployments/{id}/cancel", s.handleCancelDeployment)
 		})
 	})
 
