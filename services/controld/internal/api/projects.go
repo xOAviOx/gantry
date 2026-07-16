@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -30,6 +31,15 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
+	// Trim path-ish fields: a stray space in repo_url makes a Windows path like
+	// "C:/..." look like an scp git URL, producing a confusing clone error.
+	req.Name = strings.TrimSpace(req.Name)
+	req.Slug = strings.TrimSpace(req.Slug)
+	req.RepoURL = strings.TrimSpace(req.RepoURL)
+	req.Branch = strings.TrimSpace(req.Branch)
+	req.DockerfilePath = strings.TrimSpace(req.DockerfilePath)
+	req.HealthPath = strings.TrimSpace(req.HealthPath)
+
 	if req.Name == "" || req.Slug == "" || req.RepoURL == "" {
 		writeErr(w, http.StatusBadRequest, "name, slug, and repo_url are required")
 		return
