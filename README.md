@@ -2,9 +2,9 @@
 
 A single-node mini-PaaS — push a repo, get a running app on its own subdomain, with live build logs, zero-downtime deploys, encrypted secrets, and a control plane that heals itself.
 
-[![Gantry — watch the demo](docs/demo-thumb.jpg)](https://github.com/xOAviOx/gantry/blob/main/docs/demo.mp4)
+[![Gantry — watch the demo](docs/demo-thumb.jpg)](https://youtu.be/C4HnnOL1kvY)
 
-▶ **[Watch the demo](https://github.com/xOAviOx/gantry/blob/main/docs/demo.mp4)** (~40s)
+▶ **[Watch the demo on YouTube](https://youtu.be/C4HnnOL1kvY)** (~40s)
 
 ---
 
