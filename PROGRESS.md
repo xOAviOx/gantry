@@ -267,25 +267,89 @@ Notes: env vars are applied at container-create, not baked into the image, so ro
 
 ---
 
-## M5 — Reconciliation
-- [ ] 30s loop: recreate missing live containers, reap orphans, re-render Caddy on drift
-- [ ] controld restart fully re-renders from DB
-- [ ] Healing actions logged at `warn` with `reconciler=true`
+## M5 — Reconciliation  ✅ DONE (2026-07-16)
+- [x] 30s loop (`deploy.Reconciler`): recreate missing/dead live containers (advisory-locked, env-injected, health-gated), reap orphan gantry containers, reload Caddy on drift
+- [x] controld restart fully re-renders from DB (`bootLoadCaddy` → `RenderAndLoad`, already on boot; verified)
+- [x] Healing actions logged at `warn` with `reconciler=true`
+- [x] Infra safety: only containers carrying a `dev.gantry.deployment` label are eligible for reaping, so `gantry-postgres`/`gantry-caddy` (managed-labeled but not deployment-labeled) are never touched
+- [x] Orphan protection: reaps only deployments in a terminal state — live + in-flight deploys are protected, so a mid-deploy container is never removed
+- [x] Drift check via host/dial markers in Caddy's live `/config/`; unit-tested; `GANTRY_RECONCILE_INTERVAL` config knob
+- [x] go vet / go test / gofmt / tsc --noEmit clean
 
-**DoD:** `docker rm -f` live container → healed <30s; wipe Caddy config → restored <30s; restart controld → routes intact.
+**DoD** — all passed:
+- [x] `docker rm -f` live container → healed <30s
+- [x] wipe Caddy config → restored <30s
+- [x] restart controld → routes intact
 
-_Evidence:_ _(pending)_
+_Evidence (2026-07-16, controld run with GANTRY_RECONCILE_INTERVAL=5s except where noted):_
+
+```
+# DoD: docker rm -f live container -> healed
+docker rm -f gantry-hellom2-bd026553  -> app via Caddy = 502
+reconciler log: recreating live container (slug=hellom2) -> started -> healthy (HTTP 200) -> "healed live container"
+app 200 again within a couple seconds ; new container gantry-hellom2-bd026553 Up
+
+# DoD: wipe Caddy config -> restored
+POST /load {servers:{}}  -> app + dashboard = 000 (no routes)
+reconciler log: WARN "reconciler repairing caddy config" force=false routes=2
+restored in ~4s ; app=200, dashboard {"ok":true}
+
+# DoD: restart controld -> routes intact (reconciler set to 300s to isolate the BOOT render)
+stop controld -> wipe Caddy -> app=000
+start controld -> log "caddy config loaded on boot" -> app=200 "hello from gantry", dashboard=200
+  (routes restored by boot re-render from DB, before the reconciler could run)
+
+# Orphan reap + infra safety
+plant gantry-orphan-test (managed + deployment=0000... not in DB)
+  -> WARN "reconciler reaping orphan container" deployment=0000... -> removed
+  -> gantry-postgres / gantry-caddy / live app containers all still Up (never eligible: no deployment label / protected)
+
+# unit: TestHasAllMarkers (drift detection) ; gates: vet · gofmt · go test · tsc — clean
+```
+
+Notes: Caddy dials apps by container *name* on the `gantry-apps` network, so a same-name recreate is reachable via Docker DNS without a Caddy change — the reconciler still reloads after a heal (force) to refresh upstreams, and the healed deployment's `host_port` (controld's own health port) is updated in the DB. Recreation takes the project advisory lock, so it never races a concurrent deploy. Decision D20 added.
 
 ---
 
-## M6 — GC & disk
-- [ ] Image retention (`GANTRY_KEEP_IMAGES` + live)
-- [ ] Scheduled + on-demand GC: dangling prune, BuildKit cache cap, log purge (14d), exited-container cleanup
-- [ ] Disk widget (`docker system df`) + "Run GC now"
+## M6 — GC & disk  ✅ DONE (2026-07-16)
+- [x] Image retention — `store.ImageTagsToKeep` (last `GANTRY_KEEP_IMAGES` deploys per project + live); GC removes gantry-labeled images not in the keep set
+- [x] Scheduled (`GANTRY_GC_INTERVAL`, default 24h) + on-demand (`POST /api/system/gc`) GC: exited-container cleanup → image retention → dangling prune (label-scoped) → BuildKit cache prune (`ReservedSpace = GANTRY_BUILDER_KEEP_STORAGE`) → `log_lines` purge (`GANTRY_LOG_RETENTION`, default 14d); returns a reclamation report; single-flight via mutex (409 if busy)
+- [x] Disk widget — `GET /api/system/disk` summarizes `docker system df` (images/containers/build-cache count+size+reclaimable); home-page widget + "Run GC now" button showing the report
+- [x] Infra-safe: exited-container cleanup requires a `dev.gantry.deployment` label (never postgres/caddy)
+- [x] Tests: `ParseBytes` unit; store integration (`ImageTagsToKeep` last-N + always-keep-live, `PurgeOldLogs`)
+- [x] go vet / go test / integration / gofmt / tsc --noEmit clean
 
-**DoD:** 5 deploys → only last 3 + live images remain; builder cache under cap after GC; widget matches `docker system df`.
+**DoD** — all passed:
+- [x] 5 deploys → only last 3 + live images remain
+- [x] builder cache under cap after GC
+- [x] widget matches `docker system df`
 
-_Evidence:_ _(pending)_
+_Evidence (2026-07-16, controld run with GANTRY_KEEP_IMAGES=3, GANTRY_BUILDER_KEEP_STORAGE=0):_
+
+```
+# DoD: 5 deploys of a fresh project 'gctest' -> 5 images
+gantry/gctest:d-{b167821d(1) bdd85592(2) b5daba80(3) 6d9a5f4f(4) 0b13402a(5,live)}
+
+POST /api/system/gc -> {"images_removed":9,"containers_removed":0,"cache_reclaimed":28672,"log_lines_purged":0,"duration_ms":1330}
+
+# after GC: gctest keeps exactly 3 = last 3 deploys + live
+gantry/gctest:d-0b13402a (live/d5) · d-6d9a5f4f (d4) · d-b5daba80 (d3)   # d1,d2 removed
+(images_removed=9 also swept older images of other projects beyond their keep-3)
+
+# DoD: widget matches `docker system df`  (before GC)
+widget      : images count=22 size=1432.2MB · containers count=7 size=0.1MB · build_cache count=12 size~0
+docker df   : Images 22 SIZE 1.432GB · Containers 7 106.5kB · Build Cache 12 28.67kB
+
+# DoD: builder cache under cap after GC (cap=0)
+before: Build Cache 12 / 28.67kB   ->  GC cache_reclaimed=28672  ->  after: Build Cache 9 / 0B
+widget after: images count=13 (=df 13) · build_cache size=0
+
+# apps stay live through GC (retention keeps live images): gctest=200, hellom2=200
+# unit: TestParseBytes ; integration: TestImageTagsToKeep(+AlwaysKeepsLive), TestPurgeOldLogs
+# gates: vet · gofmt · go test · integration · tsc — clean
+```
+
+Notes: exited containers are removed *before* images so their images become deletable; images are removed with force+prune-children. The disk widget's counts and sizes match `docker system df` exactly; its *reclaimable* is an approximation that clamps the negative value df sometimes reports for images (a shared-layer accounting quirk). GC runs synchronously on the API request (fast: prune ops) rather than through the job queue, with a mutex so the nightly sweep and a dashboard click never overlap — Decision D21.
 
 ---
 
