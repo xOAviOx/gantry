@@ -13,6 +13,7 @@ import (
 	"github.com/avishuklacode/gantry/services/controld/internal/config"
 	"github.com/avishuklacode/gantry/services/controld/internal/logs"
 	"github.com/avishuklacode/gantry/services/controld/internal/proxy"
+	"github.com/avishuklacode/gantry/services/controld/internal/queue"
 	"github.com/avishuklacode/gantry/services/controld/internal/store"
 )
 
@@ -55,6 +56,17 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 	w.System(fmt.Sprintf("=== deploy %s · project %s · trigger %s ===", short(deploymentID), proj.Slug, dep.Trigger))
 
 	fail := func(status, msg string) error {
+		// A cooperative cancel (supersession or explicit cancel) tears down ctx with
+		// a cause; translate whatever step-level failure it produced into the right
+		// terminal status rather than reporting it as a build/deploy failure.
+		if ctx.Err() != nil {
+			switch cause := context.Cause(ctx); {
+			case errors.Is(cause, queue.ErrSuperseded):
+				status, msg = store.StatusSuperseded, "superseded by a newer deploy"
+			case errors.Is(cause, queue.ErrCanceled):
+				status, msg = store.StatusCanceled, "canceled"
+			}
+		}
 		w.System("FAILED (" + status + "): " + msg)
 		if err := store.FinishDeployment(context.WithoutCancel(ctx), o.pool, deploymentID, status, msg); err != nil {
 			o.log.Error("record failure", "deployment", deploymentID, "err", err)
