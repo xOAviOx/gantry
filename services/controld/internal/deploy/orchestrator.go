@@ -59,10 +59,12 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 		if err := store.FinishDeployment(context.WithoutCancel(ctx), o.pool, deploymentID, status, msg); err != nil {
 			o.log.Error("record failure", "deployment", deploymentID, "err", err)
 		}
+		o.emit(ctx, deploymentID)
 		return errors.New(msg)
 	}
 
 	_ = store.MarkDeploymentStarted(ctx, o.pool, deploymentID, store.StatusCloning)
+	o.emit(ctx, deploymentID)
 
 	imageTag := dep.ImageTag
 	if !opts.SkipBuild {
@@ -75,6 +77,7 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 			DeploymentID:   deploymentID,
 		}, w, func() {
 			_ = store.SetDeploymentStatus(ctx, o.pool, deploymentID, store.StatusBuilding)
+			o.emit(ctx, deploymentID)
 		})
 		if err != nil {
 			return fail(store.StatusBuildFailed, "build: "+err.Error())
@@ -83,6 +86,7 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 		if err := store.SetDeploymentBuild(ctx, o.pool, deploymentID, res.SHA, res.CommitMessage, res.ImageTag); err != nil {
 			o.log.Error("record build", "deployment", deploymentID, "err", err)
 		}
+		o.emit(ctx, deploymentID)
 	} else {
 		if imageTag == "" {
 			return fail(store.StatusDeployFailed, "skip_build set but deployment has no image_tag")
@@ -94,6 +98,7 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 	env := map[string]string{}
 
 	_ = store.SetDeploymentStatus(ctx, o.pool, deploymentID, store.StatusStarting)
+	o.emit(ctx, deploymentID)
 	start, err := o.deployer.CreateAndStart(ctx, StartRequest{
 		Slug:         proj.Slug,
 		DeploymentID: deploymentID,
@@ -109,6 +114,7 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 	}
 
 	_ = store.SetDeploymentStatus(ctx, o.pool, deploymentID, store.StatusChecking)
+	o.emit(ctx, deploymentID)
 	if err := o.deployer.HealthCheck(ctx, start.HostPort, proj.HealthPath, w); err != nil {
 		_ = o.deployer.RemoveContainer(context.WithoutCancel(ctx), start.ContainerName)
 		return fail(store.StatusDeployFailed, "health check: "+err.Error())
@@ -116,11 +122,13 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 
 	// Route: promote in DB (single live per project), then re-render Caddy.
 	_ = store.SetDeploymentStatus(ctx, o.pool, deploymentID, store.StatusRouting)
+	o.emit(ctx, deploymentID)
 	old, err := store.PromoteToLive(ctx, o.pool, dep.ProjectID, deploymentID)
 	if err != nil {
 		_ = o.deployer.RemoveContainer(context.WithoutCancel(ctx), start.ContainerName)
 		return fail(store.StatusDeployFailed, "promote: "+err.Error())
 	}
+	o.emit(ctx, deploymentID)
 	if err := o.RenderAndLoad(ctx); err != nil {
 		// The deployment is live in the DB; the reconciler (M5) re-renders on drift.
 		w.System("WARN caddy load failed (will reconcile): " + err.Error())
@@ -139,6 +147,18 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 	w.System(fmt.Sprintf("=== LIVE at http://%s.apps.localhost/ ===", proj.Slug))
 	o.log.Info("deployment live", "deployment", deploymentID, "slug", proj.Slug, "container", start.ContainerName)
 	return nil
+}
+
+// emit publishes the deployment's current state to any live status subscribers
+// (the /events SSE stream). It reloads via a detached context so the terminal
+// live/failed event still goes out even if the run's ctx was canceled.
+func (o *Orchestrator) emit(ctx context.Context, deploymentID string) {
+	dep, err := store.GetDeployment(context.WithoutCancel(ctx), o.pool, deploymentID)
+	if err != nil {
+		o.log.Warn("status emit: reload failed", "deployment", deploymentID, "err", err)
+		return
+	}
+	o.hub.PublishStatus(deploymentID, dep)
 }
 
 // RenderAndLoad renders the full desired Caddy config from DB state and pushes
