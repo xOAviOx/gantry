@@ -23,6 +23,7 @@ import (
 	"github.com/avishuklacode/gantry/services/controld/internal/config"
 	"github.com/avishuklacode/gantry/services/controld/internal/deploy"
 	"github.com/avishuklacode/gantry/services/controld/internal/docker"
+	"github.com/avishuklacode/gantry/services/controld/internal/gc"
 	"github.com/avishuklacode/gantry/services/controld/internal/logs"
 	"github.com/avishuklacode/gantry/services/controld/internal/proxy"
 	"github.com/avishuklacode/gantry/services/controld/internal/queue"
@@ -131,10 +132,18 @@ func run() error {
 	// Reaper: requeue/fail jobs orphaned by a crashed worker (SPEC.md §7).
 	go queue.RunReaper(ctx, pool, logger, cfg.ReaperInterval, cfg.JobStaleAfter)
 
+	// Reconciler: heal drift between the DB's desired state and Docker/Caddy (§13).
+	reconciler := deploy.NewReconciler(orch, dc)
+	go reconciler.Run(ctx, cfg.ReconcileInterval)
+
+	// GC: scheduled disk reclamation (image retention, prune, log purge) (§14).
+	collector := gc.New(dc, pool, cfg, logger)
+	go collector.RunScheduled(ctx, cfg.GCInterval)
+
 	// HTTP server.
 	srv := &http.Server{
 		Addr:    cfg.ControldAddr,
-		Handler: api.NewRouter(&api.Server{Logger: logger, Pool: pool, Cfg: cfg, Hub: hub, Secrets: box}),
+		Handler: api.NewRouter(&api.Server{Logger: logger, Pool: pool, Cfg: cfg, Hub: hub, Secrets: box, GC: collector}),
 	}
 	errCh := make(chan error, 1)
 	go func() {

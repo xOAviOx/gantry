@@ -23,6 +23,18 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
+export function formatBytes(n: number): string {
+  if (!n || n < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
 export function relTime(iso: string | null): string {
   if (!iso) return "never";
   const d = new Date(iso).getTime();

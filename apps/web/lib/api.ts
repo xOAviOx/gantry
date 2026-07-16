@@ -109,6 +109,25 @@ export const rollbackTo = (id: string, deploymentId: string) =>
 export const envRestart = (id: string) =>
   api<Deployment>(`/projects/${id}/env/restart`, { method: "POST" });
 
+export type DiskCategory = { count: number; size: number; reclaimable: number };
+export type DiskReport = {
+  images: DiskCategory;
+  containers: DiskCategory;
+  build_cache: DiskCategory;
+  total_reclaimable: number;
+};
+export type GCReport = {
+  images_removed: number;
+  containers_removed: number;
+  dangling_reclaimed: number;
+  cache_reclaimed: number;
+  log_lines_purged: number;
+  duration_ms: number;
+};
+
+export const getDisk = () => api<DiskReport>("/system/disk");
+export const runGC = () => api<GCReport>("/system/gc", { method: "POST" });
+
 // Live streams (SSE). Consumed via the browser's native EventSource, which sends
 // the session cookie same-origin and resumes from Last-Event-ID on reconnect.
 export const logsStreamURL = (id: string) => `/api/deployments/${id}/logs`;
