@@ -1,19 +1,46 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
-import { getDeployment, isTerminal } from "@/lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Deployment,
+  eventsStreamURL,
+  getDeployment,
+  isTerminal,
+} from "@/lib/api";
 import { LogViewer, PipelineSteps, StatusBadge, relTime } from "../../components";
 
 export default function DeploymentPage() {
   const { id } = useParams<{ id: string }>();
+  const qc = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["deployment", id],
     queryFn: () => getDeployment(id),
-    refetchInterval: (q) => (isTerminal(q.state.data?.status ?? "") ? false : 1500),
   });
+
+  // Live status via SSE (SPEC.md §11): push each transition straight into the
+  // query cache instead of polling. The stream also sends the current state on
+  // connect, so this stays correct even for an already-finished deployment.
+  const esRef = useRef<EventSource | null>(null);
+  useEffect(() => {
+    const es = new EventSource(eventsStreamURL(id));
+    esRef.current = es;
+    es.addEventListener("status", (e) => {
+      const dep = JSON.parse((e as MessageEvent).data) as Deployment;
+      qc.setQueryData(["deployment", id], dep);
+      if (isTerminal(dep.status)) {
+        // Nothing more will change; let the connection go after a short grace.
+        setTimeout(() => esRef.current?.close(), 3000);
+      }
+    });
+    return () => {
+      es.close();
+      esRef.current = null;
+    };
+  }, [id, qc]);
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">

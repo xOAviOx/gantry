@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getLogs, isFailed, isTerminal, LogLine, PIPELINE } from "@/lib/api";
+import { isFailed, isTerminal, LogLine, logsStreamURL, PIPELINE } from "@/lib/api";
 
 export function statusClass(s: string): string {
   if (s === "live") return "border-accent/50 text-accent";
@@ -73,8 +73,17 @@ const streamColor: Record<string, string> = {
   stdout: "text-[#e6edf3]",
 };
 
-// LogViewer polls the logs endpoint with an after-cursor and appends lines.
-// (M2 replaces the polling with SSE + Last-Event-ID.)
+// Bounded in-memory tail + fixed row height keep the DOM small no matter how
+// noisy a build is; ROW_H must match the row's lineHeight below for the windowed
+// list to line up.
+const MAX_LINES = 5000;
+const ROW_H = 18;
+const OVERSCAN = 12;
+
+// LogViewer streams a deployment's logs over SSE (SPEC.md §10). The browser's
+// EventSource replays the backlog, then live lines arrive as `log` events; on a
+// hard refresh it resumes via Last-Event-ID. Rows render through a windowed
+// (virtualized) list so a multi-thousand-line build stays smooth.
 export function LogViewer({
   deploymentId,
   status,
@@ -83,56 +92,86 @@ export function LogViewer({
   status: string;
 }) {
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [gap, setGap] = useState(false);
   const [autoscroll, setAutoscroll] = useState(true);
-  const afterRef = useRef(0);
+
   const boxRef = useRef<HTMLDivElement>(null);
+  const esRef = useRef<EventSource | null>(null);
+  const maxSeqRef = useRef(0);
+
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewH, setViewH] = useState(0);
+
   const terminal = isTerminal(status);
 
+  // One EventSource for the component's lifetime. It reconnects on its own and
+  // sends Last-Event-ID; we still guard against duplicate seqs defensively.
   useEffect(() => {
-    let alive = true;
-    let stopped = false;
+    const es = new EventSource(logsStreamURL(deploymentId));
+    esRef.current = es;
 
-    async function tick() {
-      try {
-        const res = await getLogs(deploymentId, afterRef.current);
-        if (!alive) return;
-        if (res.lines.length) {
-          afterRef.current = res.next;
-          setLines((prev) => [...prev, ...res.lines]);
-        }
-      } catch {
-        /* ignore transient errors */
-      }
-      // Once the deployment is terminal, fetch one last time then stop.
-      if (isTerminal(status) && !stopped) {
-        stopped = true;
-        setTimeout(() => {
-          if (alive) tick();
-        }, 1200);
-      }
-    }
+    es.addEventListener("log", (e) => {
+      const ll = JSON.parse((e as MessageEvent).data) as LogLine;
+      if (ll.seq <= maxSeqRef.current) return;
+      maxSeqRef.current = ll.seq;
+      setLines((prev) => {
+        const trimmed =
+          prev.length >= MAX_LINES ? prev.slice(prev.length - MAX_LINES + 1) : prev;
+        return [...trimmed, ll];
+      });
+    });
+    es.addEventListener("gap", () => setGap(true));
 
-    tick();
-    const iv = setInterval(() => {
-      if (!terminal) tick();
-    }, 1000);
     return () => {
-      alive = false;
-      clearInterval(iv);
+      es.close();
+      esRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deploymentId, status]);
+  }, [deploymentId]);
 
+  // Close the stream a beat after the deployment settles — the backlog has fully
+  // arrived by then, and there is nothing more to receive.
+  useEffect(() => {
+    if (!terminal) return;
+    const t = setTimeout(() => esRef.current?.close(), 3000);
+    return () => clearTimeout(t);
+  }, [terminal]);
+
+  // Track the viewport height for windowing.
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    setViewH(el.clientHeight);
+    const ro = new ResizeObserver(() => setViewH(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Keep pinned to the bottom while autoscroll is on.
   useEffect(() => {
     if (autoscroll && boxRef.current) {
       boxRef.current.scrollTop = boxRef.current.scrollHeight;
     }
   }, [lines, autoscroll]);
 
+  const onScroll = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    setScrollTop(el.scrollTop);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    setAutoscroll(atBottom);
+  };
+
+  const total = lines.length;
+  const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const last = Math.min(total, first + Math.ceil(viewH / ROW_H) + OVERSCAN * 2);
+  const slice = lines.slice(first, last);
+
   return (
     <div className="rounded-lg border border-edge bg-black/40">
       <div className="flex items-center justify-between border-b border-edge px-3 py-2 text-xs text-[#8b949e]">
-        <span>{lines.length} lines</span>
+        <span>
+          {total} lines{total >= MAX_LINES && ` (showing last ${MAX_LINES})`}
+        </span>
         <label className="flex items-center gap-1.5">
           <input
             type="checkbox"
@@ -142,23 +181,46 @@ export function LogViewer({
           autoscroll
         </label>
       </div>
+
+      {gap && (
+        <div className="border-b border-yellow-500/30 bg-yellow-500/10 px-3 py-1.5 text-xs text-yellow-400">
+          stream fell behind — some lines were skipped. Reload to replay the full log.
+        </div>
+      )}
+
       <div
         ref={boxRef}
-        className="h-[28rem] overflow-auto px-3 py-2 text-xs leading-relaxed"
+        onScroll={onScroll}
+        className="h-[28rem] overflow-auto px-3 py-2 font-mono text-xs"
       >
-        {lines.length === 0 && (
+        {total === 0 ? (
           <div className="text-[#5b636e]">waiting for logs…</div>
-        )}
-        {lines.map((l) => (
-          <div key={l.seq} className="whitespace-pre-wrap break-all">
-            <span className="mr-2 select-none text-[#3b414d]">
-              {String(l.seq).padStart(4, " ")}
-            </span>
-            <span className={streamColor[l.stream] || "text-[#e6edf3]"}>
-              {l.line || " "}
-            </span>
+        ) : (
+          <div style={{ height: total * ROW_H, position: "relative" }}>
+            {slice.map((l, i) => {
+              const idx = first + i;
+              return (
+                <div
+                  key={l.seq}
+                  style={{
+                    position: "absolute",
+                    top: idx * ROW_H,
+                    height: ROW_H,
+                    lineHeight: `${ROW_H}px`,
+                  }}
+                  className="flex whitespace-pre"
+                >
+                  <span className="mr-3 select-none text-[#3b414d]">
+                    {String(l.seq).padStart(4, " ")}
+                  </span>
+                  <span className={streamColor[l.stream] || "text-[#e6edf3]"}>
+                    {l.line || " "}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );

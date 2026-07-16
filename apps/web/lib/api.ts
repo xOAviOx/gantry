@@ -83,8 +83,10 @@ export const deployProject = (id: string) =>
 
 export const getDeployment = (id: string) => api<Deployment>(`/deployments/${id}`);
 
-export const getLogs = (id: string, after: number) =>
-  api<{ lines: LogLine[]; next: number }>(`/deployments/${id}/logs?after=${after}`);
+// Live streams (SSE). Consumed via the browser's native EventSource, which sends
+// the session cookie same-origin and resumes from Last-Event-ID on reconnect.
+export const logsStreamURL = (id: string) => `/api/deployments/${id}/logs`;
+export const eventsStreamURL = (id: string) => `/api/deployments/${id}/events`;
 
 export const PIPELINE = [
   "queued",
