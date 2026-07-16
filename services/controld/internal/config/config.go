@@ -41,6 +41,13 @@ type Config struct {
 	Heartbeat      time.Duration // worker locked_at refresh cadence (default 15s)
 	LockRetryDelay time.Duration // requeue delay when a project lock is contended (default 10s)
 	CancelPoll     time.Duration // how often a worker checks its cancel flag (default 2s)
+
+	// Reconciliation (SPEC.md §13).
+	ReconcileInterval time.Duration // how often the reconciler sweeps (default 30s)
+
+	// GC & disk lifecycle (SPEC.md §14).
+	GCInterval   time.Duration // how often the scheduled GC runs (default 24h)
+	LogRetention time.Duration // delete log_lines older than this (default 14d)
 }
 
 // Load reads deploy/.env (if present and vars are unset) then the process env.
@@ -78,6 +85,9 @@ func Load() (Config, error) {
 	c.Heartbeat = getenvDur("GANTRY_HEARTBEAT", 15*time.Second)
 	c.LockRetryDelay = getenvDur("GANTRY_LOCK_RETRY_DELAY", 10*time.Second)
 	c.CancelPoll = getenvDur("GANTRY_CANCEL_POLL", 2*time.Second)
+	c.ReconcileInterval = getenvDur("GANTRY_RECONCILE_INTERVAL", 30*time.Second)
+	c.GCInterval = getenvDur("GANTRY_GC_INTERVAL", 24*time.Hour)
+	c.LogRetention = getenvDur("GANTRY_LOG_RETENTION", 14*24*time.Hour)
 
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required (set it in deploy/.env)")

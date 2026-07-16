@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/avishuklacode/gantry/services/controld/internal/config"
+	"github.com/avishuklacode/gantry/services/controld/internal/gc"
 	"github.com/avishuklacode/gantry/services/controld/internal/logs"
 	"github.com/avishuklacode/gantry/services/controld/internal/secret"
 )
@@ -21,7 +22,8 @@ type Server struct {
 	Pool    *pgxpool.Pool
 	Cfg     config.Config
 	Hub     *logs.Hub
-	Secrets *secret.Box // nil if GANTRY_MASTER_KEY is unset/invalid
+	Secrets *secret.Box   // nil if GANTRY_MASTER_KEY is unset/invalid
+	GC      *gc.Collector // nil disables the disk/gc endpoints
 }
 
 // NewRouter wires middleware and routes. Public: healthz, login, webhooks (M3).
@@ -56,6 +58,9 @@ func NewRouter(s *Server) http.Handler {
 			r.Get("/deployments/{id}/logs", s.handleStreamLogs)     // SSE, Last-Event-ID resume
 			r.Get("/deployments/{id}/events", s.handleStreamEvents) // SSE status stream
 			r.Post("/deployments/{id}/cancel", s.handleCancelDeployment)
+
+			r.Get("/system/disk", s.handleDisk)
+			r.Post("/system/gc", s.handleGC)
 		})
 	})
 
