@@ -1,6 +1,13 @@
 # Force LF for all text so files built on Windows stay POSIX-clean inside Linux containers.
 * text=auto eol=lf
 
+# Binary media — never apply EOL conversion (would corrupt the file).
+*.mp4 binary
+*.mkv binary
+*.png binary
+*.jpg binary
+*.gif binary
+
 # Explicitly LF for scripts/config that MUST be LF (shebangs, Dockerfiles, YAML, JSON).
 *.sh        text eol=lf
 *.go        text eol=lf
