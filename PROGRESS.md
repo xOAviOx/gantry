@@ -128,15 +128,42 @@ cleanup from failed deploys is the reconciler's job (M5); removed manually durin
 
 ---
 
-## M2 — Live logs
-- [ ] SSE log hub (batch writer + pub/sub + fanout)
-- [ ] `GET /api/deployments/{id}/logs` backlog replay + Last-Event-ID resume + heartbeat + gap-on-overflow
-- [ ] `GET /api/deployments/{id}/events` status stream
-- [ ] Log viewer UI (autoscroll, virtualized)
+## M2 — Live logs  ✅ DONE (2026-07-16)
+- [x] SSE log hub (batch writer + pub/sub + fanout) — generic `broker[T]`; `Writer.Line` publishes each line to live subscribers under the same seq lock as the batch persister (strict order); brokers GC'd once no writer is producing and no subscriber is reading
+- [x] `GET /api/deployments/{id}/logs` — subscribe-before-backlog, replay `seq > Last-Event-ID`, dedupe overlap, live stream with SSE `id`=seq, 15s heartbeat comment, per-client buffer 1000 → `gap` event + drop on overflow
+- [x] `GET /api/deployments/{id}/events` — status stream: current-state snapshot on connect + every pipeline transition (orchestrator emits after each status write)
+- [x] Log viewer UI: native `EventSource` (`log` + `gap`), windowed/virtualized rows (fixed 18px, bounded 5000-line tail), autoscroll that releases on manual scroll-up; deployment page status now via `/events` (interval polling removed)
+- [x] Tests: broker (fanout order, overflow-drop, unsubscribe) + SSE wire (Last-Event-ID precedence, `log`/`status` framing, headers)
+- [x] go vet / go test / gofmt / tsc --noEmit clean
 
-**DoD:** stream live mid-build; hard-refresh resumes via Last-Event-ID; two tabs concurrently.
+**DoD** — all passed:
+- [x] lines stream live during a build
+- [x] hard-refresh resumes via Last-Event-ID
+- [x] two tabs stream concurrently
 
-_Evidence:_ _(pending)_
+_Evidence (2026-07-16):_
+
+```
+# Deploy examples/hello-node (slug hellom2); two /logs SSE + one /events attached at enqueue.
+
+# DoD: two tabs concurrently — both received the full stream, no drops
+tab1: 57 "event: log"   tab2: 57 "event: log"   gap events: 0 / 0
+frame shape:  id: 1 \n event: log \n data: {"seq":1,"stream":"system","line":"=== deploy 03704bb4 ..."}
+seq 1..57, last = {"seq":57,"stream":"system","line":"=== LIVE at http://hellom2.apps.localhost/ ==="}
+
+# DoD: live status stream (/events attached right after enqueue)
+queued -> cloning -> building -> building -> starting -> checking -> routing -> live
+(two `building` = emit at builder-start callback + after image recorded)
+
+# DoD: Last-Event-ID resume (first deploy persisted 57 lines)
+Last-Event-ID: 30  -> replays id 31..57  (27 lines)   # exactly seq>30
+no header          -> replays all 57                  # default 0
+
+# heartbeat: 1 `: ping` comment after 17s idle on a settled deployment
+# gate: go vet clean · go test ok (api, build, deploy, logs, proxy) · gofmt clean · tsc --noEmit clean
+```
+
+Notes: gap-on-overflow is exercised by the broker unit test (a full subscriber is dropped and its `Dropped()` closes on the next publish); the handler turns that into an `event: gap` + disconnect. Decision D17 added (SSE/virtualization choices). Also fixed a **pre-existing M1 bug** found while running the DoD: `store.ListProjectsWithStatus` selected unqualified `id`/`created_at` while joining `projects` with a `live` (has `id`) and `latest` (has `created_at`) subquery → `GET /api/projects` failed with `column reference "id" is ambiguous` (SQLSTATE 42702), breaking the dashboard home. Qualified the projected columns with `p.`; endpoint now returns 200.
 
 ---
 
