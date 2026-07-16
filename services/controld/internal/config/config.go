@@ -33,6 +33,14 @@ type Config struct {
 	KeepImages    int
 	BuilderKeep   string
 	LogLevel      string
+
+	// Queue hardening (SPEC.md §7). Defaults match the spec; overridable via env
+	// mainly to speed up tests/demos.
+	ReaperInterval time.Duration // how often the reaper sweeps (default 30s)
+	JobStaleAfter  time.Duration // running job with older locked_at is stale (default 60s)
+	Heartbeat      time.Duration // worker locked_at refresh cadence (default 15s)
+	LockRetryDelay time.Duration // requeue delay when a project lock is contended (default 10s)
+	CancelPoll     time.Duration // how often a worker checks its cancel flag (default 2s)
 }
 
 // Load reads deploy/.env (if present and vars are unset) then the process env.
@@ -65,6 +73,12 @@ func Load() (Config, error) {
 	}
 	c.BuildTimeout = bt
 
+	c.ReaperInterval = getenvDur("GANTRY_REAPER_INTERVAL", 30*time.Second)
+	c.JobStaleAfter = getenvDur("GANTRY_JOB_STALE", 60*time.Second)
+	c.Heartbeat = getenvDur("GANTRY_HEARTBEAT", 15*time.Second)
+	c.LockRetryDelay = getenvDur("GANTRY_LOCK_RETRY_DELAY", 10*time.Second)
+	c.CancelPoll = getenvDur("GANTRY_CANCEL_POLL", 2*time.Second)
+
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required (set it in deploy/.env)")
 	}
@@ -74,6 +88,17 @@ func Load() (Config, error) {
 func getenv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
+	}
+	return def
+}
+
+// getenvDur parses a Go duration (e.g. "30s", "2m") from the env, or returns def
+// if unset or unparseable.
+func getenvDur(key string, def time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+			return d
+		}
 	}
 	return def
 }
