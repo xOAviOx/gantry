@@ -32,6 +32,14 @@ type EnqueueOpts struct {
 	RunAfter  time.Time
 }
 
+func marshalPayload(v any) (json.RawMessage, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshal payload: %w", err)
+	}
+	return raw, nil
+}
+
 // Enqueue inserts a queued job. Returns the new job id, or 0 if a dedupe_key
 // collision meant nothing was inserted.
 func Enqueue(ctx context.Context, pool *pgxpool.Pool, kind string, payload any, opts EnqueueOpts) (int64, error) {

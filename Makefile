@@ -48,7 +48,7 @@ test:
 	@bash -c 'go test ./...'
 
 it:
-	@bash -c 'go test -tags=integration ./...'
+	@bash -c 'export DATABASE_URL=$$(grep -E "^DATABASE_URL=" deploy/.env | cut -d= -f2-); go test -tags=integration ./...'
 
 lint:
 	@bash -c 'go vet ./... && { command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed; ran go vet only"; } && cd apps/web && node node_modules/typescript/bin/tsc --noEmit'
