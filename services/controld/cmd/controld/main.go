@@ -87,18 +87,30 @@ func run() error {
 	// Queue + workers.
 	host, _ := os.Hostname()
 	workers := queue.NewPool(pool, logger, cfg.Workers, host)
-	workers.Register("build_deploy", func(ctx context.Context, j *queue.Job) error {
-		var p struct {
-			DeploymentID string `json:"deployment_id"`
-			SkipBuild    bool   `json:"skip_build"`
+	workers.Heartbeat = cfg.Heartbeat
+	workers.LockRetryDelay = cfg.LockRetryDelay
+	workers.CancelPoll = cfg.CancelPoll
+	// Serialize build_deploy jobs per project via a per-project advisory lock.
+	workers.SerializeKey = func(j *queue.Job) string {
+		if j.Kind != "build_deploy" {
+			return ""
 		}
-		if err := json.Unmarshal(j.Payload, &p); err != nil {
+		var dj queue.DeployJob
+		if err := json.Unmarshal(j.Payload, &dj); err != nil {
+			return ""
+		}
+		return dj.ProjectID
+	}
+	workers.Register("build_deploy", func(ctx context.Context, j *queue.Job) error {
+		var dj queue.DeployJob
+		if err := json.Unmarshal(j.Payload, &dj); err != nil {
 			return fmt.Errorf("bad build_deploy payload: %w", err)
 		}
-		// The deployment records its own success/failure; a pipeline error here
-		// is not a job failure in M1 (queue retry hardening is M3).
-		if err := orch.Run(ctx, p.DeploymentID, deploy.RunOpts{SkipBuild: p.SkipBuild}); err != nil {
-			logger.Error("deploy pipeline error", "deployment", p.DeploymentID, "err", err)
+		// The deployment records its own success/failure/supersede; the pool sets
+		// the job's terminal status (done/failed/canceled/superseded) from the
+		// context cause, so a pipeline error here is only logged.
+		if err := orch.Run(ctx, dj.DeploymentID, deploy.RunOpts{SkipBuild: dj.SkipBuild}); err != nil {
+			logger.Error("deploy pipeline error", "deployment", dj.DeploymentID, "err", err)
 		}
 		return nil
 	})
@@ -108,6 +120,9 @@ func run() error {
 		workers.Run(ctx)
 		close(workersDone)
 	}()
+
+	// Reaper: requeue/fail jobs orphaned by a crashed worker (SPEC.md §7).
+	go queue.RunReaper(ctx, pool, logger, cfg.ReaperInterval, cfg.JobStaleAfter)
 
 	// HTTP server.
 	srv := &http.Server{
