@@ -1,6 +1,6 @@
 # Gantry
 
-A single-node mini-PaaS — push a repo, get a running app on its own subdomain, with live build logs, zero-downtime deploys, encrypted secrets, and a control plane that heals itself.
+A single-node mini-PaaS push a repo, get a running app on its own subdomain, with live build logs, zero-downtime deploys, encrypted secrets, and a control plane that heals itself.
 
 [![Gantry — watch the demo](docs/demo-thumb.jpg)](https://youtu.be/C4HnnOL1kvY)
 
