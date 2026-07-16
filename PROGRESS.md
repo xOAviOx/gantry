@@ -167,18 +167,54 @@ Notes: gap-on-overflow is exercised by the broker unit test (a full subscriber i
 
 ---
 
-## M3 — Queue hardening + webhooks
-- [ ] `FOR UPDATE SKIP LOCKED` claim, worker pool, poll w/ jitter
-- [ ] Per-project advisory-lock serialization
-- [ ] Supersession + cooperative cancel (build actually stops)
-- [ ] Heartbeats + reaper (60s stale) + exponential backoff
-- [ ] `POST /webhooks/github`: HMAC verify, branch filter, delivery dedupe, 202 fast
-- [ ] Queue unit tests (concurrent-claim, supersession, reaper)
-- [ ] README: smee.io / cloudflared webhook forwarding
+## M3 — Queue hardening + webhooks  ✅ DONE (2026-07-16)
+- [x] `FOR UPDATE SKIP LOCKED` claim, worker pool, poll w/ jitter (claim was already M1; hardened here)
+- [x] Per-project advisory-lock serialization — `pg_try_advisory_lock(hashtext('gantry:project:'||id))` on a dedicated conn held for the job; contention → requeue +10s (attempt not counted)
+- [x] Supersession + cooperative cancel — `EnqueueDeploy` supersedes queued jobs+deployments and flags a running one; worker polls the flag, cancels the job's context (cause = superseded|canceled), which kills the `docker build`/`git` subprocess and cleans the temp dir
+- [x] Heartbeats + reaper (stale by `locked_at`) + exponential backoff; workers refresh `locked_at`; reaper requeues (retries left) or fails (exhausted)
+- [x] `POST /webhooks/github` — HMAC `X-Hub-Signature-256` verify, push-only, per-project branch filter, repo-url match, delivery dedupe (`webhook_deliveries` + jobs `dedupe_key`), 202 fast
+- [x] `POST /api/deployments/{id}/cancel` (shares the cooperative-cancel mechanism; reason=canceled)
+- [x] Tests: unit (HMAC verify, repo-url normalize/match) + integration `-tags=integration` (concurrent-claim, supersession, reaper)
+- [x] README: smee.io / cloudflared webhook forwarding
+- [x] Migration 0002 (`jobs.cancel_reason` + partial index); config knobs for the cadences
+- [x] go vet / go test / integration / gofmt / tsc --noEmit clean
 
-**DoD:** back-to-back deploys → first `superseded` & stops; `kill -9` mid-build → reaper requeues → completes; bad signature → 401; replayed delivery → deduped; tests pass.
+**DoD** — all passed:
+- [x] back-to-back deploys → first `superseded` & stops
+- [x] `kill -9` mid-build → reaper requeues → completes
+- [x] bad signature → 401; replayed delivery → deduped
 
-_Evidence:_ _(pending)_
+_Evidence (2026-07-16, controld run with GANTRY_WORKERS=1, CANCEL_POLL=400ms, JOB_STALE=6s, REAPER_INTERVAL=3s):_
+
+```
+# DoD: webhook (secret change-me-webhook-secret; project acmewidgets -> github.com/acme/widgets @ main)
+bad X-Hub-Signature-256           -> 401 {"error":"invalid signature"}
+ping event (valid sig)            -> 200 {"ok":true}
+push  (valid sig, delivery del-1) -> 202 {"branch":"main","queued":1}
+replay (same delivery del-1)      -> 202 {"deduped":true}
+=> acmewidgets has exactly 1 deployment: trigger=webhook status=build_failed sha=abc123def4  (fake repo; replay added none)
+
+# DoD: supersession (back-to-back deploys on hellom2)
+A claimed -> 'building'; B enqueued while A in-flight
+A: building -> superseded   (job superseded, cancel_reason=superseded, error "superseded by a newer deploy")
+B: queued -> building -> live   (job done)
+
+# DoD: kill -9 mid-build -> reaper requeues -> completes
+deploy C -> caught at 'building' -> taskkill /F controld
+  orphaned job 41: status=running attempts=1 locked_by=Avi-w0 (lock frozen)
+restart controld -> reaper log: WARN "reaper swept stale jobs" requeued=1 failed=0 reconciler=true
+  C: building -> ... -> live ; job 41 status=done attempts=2 ; curl Host: hellom2.apps.localhost -> "hello from gantry"
+
+# explicit cancel endpoint
+deploy D -> 'building' -> POST /deployments/D/cancel -> 202 {"canceling":true} -> D=canceled (job canceled, reason canceled)
+
+# integration tests (make it)
+ok queue  TestConcurrentClaimNoDoubleClaim · TestEnqueueDeploySupersedes · TestReaperRequeuesStale
+# unit: TestValidSignature · TestNormalizeRepo · TestRepoMatches (+ M2 suites)
+# gates: go vet clean · gofmt clean · tsc --noEmit clean
+```
+
+Notes: exponential backoff (`Fail`) applies to jobs that *return* errors; a deploy pipeline records its own terminal deployment status and the pool sets the job's terminal status (done/failed/canceled/superseded) from the context cause, so a deploy that fails the app is not a job retry — the retry surfaces are worker death (reaper) and lock contention (requeue). Decision D18 added. Advisory locks auto-release when a killed worker's connection closes, so a reaped job can re-acquire its project lock. Cadence knobs (`GANTRY_REAPER_INTERVAL`, `GANTRY_JOB_STALE`, `GANTRY_HEARTBEAT`, `GANTRY_LOCK_RETRY_DELAY`, `GANTRY_CANCEL_POLL`) default to the spec values; lowered here only to keep the DoD fast.
 
 ---
 
