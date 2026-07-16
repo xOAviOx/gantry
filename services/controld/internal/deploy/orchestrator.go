@@ -14,6 +14,7 @@ import (
 	"github.com/avishuklacode/gantry/services/controld/internal/logs"
 	"github.com/avishuklacode/gantry/services/controld/internal/proxy"
 	"github.com/avishuklacode/gantry/services/controld/internal/queue"
+	"github.com/avishuklacode/gantry/services/controld/internal/secret"
 	"github.com/avishuklacode/gantry/services/controld/internal/store"
 )
 
@@ -25,12 +26,13 @@ type Orchestrator struct {
 	deployer *Deployer
 	caddy    *proxy.Client
 	hub      *logs.Hub
+	secrets  *secret.Box
 	cfg      config.Config
 	log      *slog.Logger
 }
 
-func NewOrchestrator(pool *pgxpool.Pool, builder *build.Builder, deployer *Deployer, caddy *proxy.Client, hub *logs.Hub, cfg config.Config, log *slog.Logger) *Orchestrator {
-	return &Orchestrator{pool: pool, builder: builder, deployer: deployer, caddy: caddy, hub: hub, cfg: cfg, log: log}
+func NewOrchestrator(pool *pgxpool.Pool, builder *build.Builder, deployer *Deployer, caddy *proxy.Client, hub *logs.Hub, secrets *secret.Box, cfg config.Config, log *slog.Logger) *Orchestrator {
+	return &Orchestrator{pool: pool, builder: builder, deployer: deployer, caddy: caddy, hub: hub, secrets: secrets, cfg: cfg, log: log}
 }
 
 // RunOpts controls a deployment run.
@@ -106,8 +108,10 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 		w.System("skip build; reusing image " + imageTag)
 	}
 
-	// TODO(M4): decrypt project env vars here.
-	env := map[string]string{}
+	env, err := o.projectEnv(ctx, proj.ID)
+	if err != nil {
+		return fail(store.StatusDeployFailed, "env: "+err.Error())
+	}
 
 	_ = store.SetDeploymentStatus(ctx, o.pool, deploymentID, store.StatusStarting)
 	o.emit(ctx, deploymentID)
@@ -159,6 +163,28 @@ func (o *Orchestrator) Run(ctx context.Context, deploymentID string, opts RunOpt
 	w.System(fmt.Sprintf("=== LIVE at http://%s.apps.localhost/ ===", proj.Slug))
 	o.log.Info("deployment live", "deployment", deploymentID, "slug", proj.Slug, "container", start.ContainerName)
 	return nil
+}
+
+// projectEnv loads and decrypts a project's env vars for injection at
+// container-create time (SPEC.md §11). Values are never logged — on failure only
+// the offending key is named.
+func (o *Orchestrator) projectEnv(ctx context.Context, projectID string) (map[string]string, error) {
+	if o.secrets == nil {
+		return map[string]string{}, nil
+	}
+	encs, err := store.ListEnvEnc(ctx, o.pool, projectID)
+	if err != nil {
+		return nil, err
+	}
+	env := make(map[string]string, len(encs))
+	for _, e := range encs {
+		val, err := o.secrets.Decrypt(e.ValueEnc, e.Nonce)
+		if err != nil {
+			return nil, fmt.Errorf("key %q: %w", e.Key, err)
+		}
+		env[e.Key] = val
+	}
+	return env, nil
 }
 
 // emit publishes the deployment's current state to any live status subscribers

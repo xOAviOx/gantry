@@ -37,6 +37,17 @@ Queue tuning (defaults match the spec; mostly for tests/demos):
 `GANTRY_WORKERS` (2), `GANTRY_REAPER_INTERVAL` (30s), `GANTRY_JOB_STALE` (60s),
 `GANTRY_HEARTBEAT` (15s), `GANTRY_LOCK_RETRY_DELAY` (10s).
 
+### Per-app environment variables
+
+Each project has its own environment variables, set from the dashboard (or
+`PUT /api/projects/{id}/env`). Values are encrypted at rest with AES-256-GCM
+under `GANTRY_MASTER_KEY` and are write-only in the UI — you can add, overwrite,
+or delete keys and reveal a single value on demand (reveals are audit-logged),
+but the list view only ever shows key names. Saved vars are injected into the
+container on the next deploy, or immediately via **Restart with new env**
+(a skip-build redeploy). They are decrypted only at container-create time and
+never written to logs.
+
 ## GitHub webhooks
 
 Gantry deploys automatically on push. It exposes:

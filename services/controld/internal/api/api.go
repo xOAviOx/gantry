@@ -12,14 +12,16 @@ import (
 
 	"github.com/avishuklacode/gantry/services/controld/internal/config"
 	"github.com/avishuklacode/gantry/services/controld/internal/logs"
+	"github.com/avishuklacode/gantry/services/controld/internal/secret"
 )
 
 // Server carries handler dependencies (injected; no package-level state).
 type Server struct {
-	Logger *slog.Logger
-	Pool   *pgxpool.Pool
-	Cfg    config.Config
-	Hub    *logs.Hub
+	Logger  *slog.Logger
+	Pool    *pgxpool.Pool
+	Cfg     config.Config
+	Hub     *logs.Hub
+	Secrets *secret.Box // nil if GANTRY_MASTER_KEY is unset/invalid
 }
 
 // NewRouter wires middleware and routes. Public: healthz, login, webhooks (M3).
@@ -44,6 +46,11 @@ func NewRouter(s *Server) http.Handler {
 			r.Post("/projects", s.handleCreateProject)
 			r.Get("/projects/{id}", s.handleGetProject)
 			r.Post("/projects/{id}/deploy", s.handleDeployProject)
+			r.Post("/projects/{id}/rollback", s.handleRollback)
+			r.Get("/projects/{id}/env", s.handleListEnv)
+			r.Put("/projects/{id}/env", s.handlePutEnv)
+			r.Post("/projects/{id}/env/reveal", s.handleRevealEnv)
+			r.Post("/projects/{id}/env/restart", s.handleEnvRestart)
 
 			r.Get("/deployments/{id}", s.handleGetDeployment)
 			r.Get("/deployments/{id}/logs", s.handleStreamLogs)     // SSE, Last-Event-ID resume

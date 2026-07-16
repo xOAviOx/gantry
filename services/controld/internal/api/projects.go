@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -134,6 +135,107 @@ func (s *Server) handleDeployProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, dep)
+}
+
+// handleRollback redeploys a previous deployment's retained image (skip-build),
+// running the same blue/green path so it's still zero-downtime (SPEC.md §8).
+func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	proj, err := store.GetProject(r.Context(), s.Pool, id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var req struct {
+		DeploymentID string `json:"deployment_id"`
+	}
+	if err := readJSON(r, &req); err != nil || req.DeploymentID == "" {
+		writeErr(w, http.StatusBadRequest, "deployment_id required")
+		return
+	}
+	target, err := store.GetDeployment(r.Context(), s.Pool, req.DeploymentID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if target.ProjectID != proj.ID {
+		writeErr(w, http.StatusBadRequest, "deployment does not belong to this project")
+		return
+	}
+	if target.ImageTag == "" {
+		writeErr(w, http.StatusUnprocessableEntity, "target deployment has no built image to roll back to")
+		return
+	}
+
+	dep, err := s.enqueueSkipBuild(r.Context(), proj, target, store.TriggerRollback)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, dep)
+}
+
+// handleEnvRestart redeploys the current live image (skip-build) so newly-saved
+// env vars take effect without a rebuild (SPEC.md §8).
+func (s *Server) handleEnvRestart(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	proj, err := store.GetProject(r.Context(), s.Pool, id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	live, err := store.GetLiveDeployment(r.Context(), s.Pool, proj.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if live == nil || live.ImageTag == "" {
+		writeErr(w, http.StatusConflict, "no live deployment to restart")
+		return
+	}
+	dep, err := s.enqueueSkipBuild(r.Context(), proj, *live, store.TriggerEnvRestart)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, dep)
+}
+
+// enqueueSkipBuild creates a deployment that reuses src's image and enqueues a
+// supersession-aware skip-build deploy (shared by rollback + env/restart).
+func (s *Server) enqueueSkipBuild(ctx context.Context, proj store.Project, src store.Deployment, trigger string) (store.Deployment, error) {
+	dep, err := store.CreateDeployment(ctx, s.Pool, store.Deployment{
+		ProjectID:     proj.ID,
+		CommitSHA:     src.CommitSHA,
+		CommitMessage: src.CommitMessage,
+		Trigger:       trigger,
+		Status:        store.StatusQueued,
+		ImageTag:      src.ImageTag,
+	})
+	if err != nil {
+		return store.Deployment{}, err
+	}
+	if _, err := queue.EnqueueDeploy(ctx, s.Pool, queue.DeployJob{
+		DeploymentID: dep.ID,
+		ProjectID:    proj.ID,
+		SkipBuild:    true,
+	}, queue.EnqueueOpts{}); err != nil {
+		return store.Deployment{}, err
+	}
+	return dep, nil
 }
 
 func orDefault(v, def string) string {

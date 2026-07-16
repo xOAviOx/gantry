@@ -83,6 +83,32 @@ export const deployProject = (id: string) =>
 
 export const getDeployment = (id: string) => api<Deployment>(`/deployments/${id}`);
 
+export type EnvVarMeta = { key: string; updated_at: string };
+
+export const listEnv = (id: string) =>
+  api<{ keys: EnvVarMeta[] }>(`/projects/${id}/env`);
+
+export const putEnv = (id: string, set: Record<string, string>, del: string[] = []) =>
+  api<{ keys: EnvVarMeta[] }>(`/projects/${id}/env`, {
+    method: "PUT",
+    body: JSON.stringify({ set, delete: del }),
+  });
+
+export const revealEnv = (id: string, key: string) =>
+  api<{ key: string; value: string }>(`/projects/${id}/env/reveal`, {
+    method: "POST",
+    body: JSON.stringify({ key }),
+  });
+
+export const rollbackTo = (id: string, deploymentId: string) =>
+  api<Deployment>(`/projects/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify({ deployment_id: deploymentId }),
+  });
+
+export const envRestart = (id: string) =>
+  api<Deployment>(`/projects/${id}/env/restart`, { method: "POST" });
+
 // Live streams (SSE). Consumed via the browser's native EventSource, which sends
 // the session cookie same-origin and resumes from Last-Event-ID on reconnect.
 export const logsStreamURL = (id: string) => `/api/deployments/${id}/logs`;

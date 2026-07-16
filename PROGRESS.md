@@ -218,15 +218,52 @@ Notes: exponential backoff (`Fail`) applies to jobs that *return* errors; a depl
 
 ---
 
-## M4 — Zero-downtime + rollback + env
-- [ ] Blue/green with health gating + 10s drain; failed health keeps old live
-- [ ] Rollback (skip-build, reuse retained image)
-- [ ] AES-256-GCM env vars (per-value nonce), write-only UI, reveal audited
-- [ ] Env restart (skip-build redeploy)
+## M4 — Zero-downtime + rollback + env  ✅ DONE (2026-07-16)
+- [x] Blue/green with health gating + 10s drain; failed health keeps old live (pipeline from M1; verified zero-downtime here under load)
+- [x] Rollback (skip-build, reuse retained image) — `POST /api/projects/{id}/rollback {deployment_id}`; identical blue/green path, trigger=rollback
+- [x] AES-256-GCM env vars (random nonce per value), write-only UI, reveal audited — `internal/secret` box; `env_vars` stores ciphertext+nonce; decrypt only at container-create; values never logged
+- [x] Env restart (skip-build redeploy) — `POST /api/projects/{id}/env/restart` reuses the live image; `PUT /api/projects/{id}/env` (set/delete) changes nothing by itself
+- [x] Endpoints: `GET/PUT /projects/{id}/env`, `POST /projects/{id}/env/reveal` (audited), `POST /projects/{id}/env/restart`, `POST /projects/{id}/rollback`
+- [x] Frontend: write-only env editor (list keys, set/delete, reveal), per-deployment Rollback, "Restart with new env"
+- [x] Example `hello-node` gains a `FAIL_HEALTH` toggle to demo a health-gate failure
+- [x] Tests: crypto unit (round-trip, fresh-nonce, tamper, wrong-key, key-validation) + env store integration (encrypt→store→list→get→decrypt, ciphertext-only, delete)
+- [x] go vet / go test / integration / gofmt / tsc --noEmit clean
 
-**DoD:** 10 req/s loop during deploy → zero non-2xx; broken build → `deploy_failed`, old still serving; rollback restores; env change visible; DB shows only ciphertext.
+**DoD** — all passed:
+- [x] 10 req/s during a deploy → zero non-2xx
+- [x] broken deploy → `deploy_failed`, old still serving
+- [x] rollback restores; env change visible; DB shows only ciphertext
 
-_Evidence:_ _(pending)_
+_Evidence (2026-07-16):_
+
+```
+# DoD: zero-downtime — 10 req/s through Caddy across a full deploy (build→health→route→10s drain)
+total requests: 220   non-2xx: 0   histogram: 220x 200
+
+# DoD: env change visible — write-only PUT then skip-build env/restart
+PUT /projects/{id}/env {"set":{"GREETING":"hello from M4 env","APP_VERSION":"2"}} -> keys only (no values)
+POST /projects/{id}/env/restart -> live (trigger=env_restart)
+curl Host: hellom2.apps.localhost -> "hello from M4 env" / "version: 2"
+
+# DoD: DB shows only ciphertext (AES-256-GCM, per-value nonce)
+env_vars: GREETING enc=33 bytes (17 plaintext + 16 GCM tag), nonce=12 ; APP_VERSION enc=17, nonce=12
+value_enc is non-UTF8 binary; plaintext substring absent
+
+# DoD: broken deploy → deploy_failed, old still serving
+PUT env FAIL_HEALTH=1 ; env/restart -> new container /healthz=500 -> health gate never green
+  broken deploy: deploy_failed ; old deployment stays 'live'
+  app served 200 "hello from M4 env" throughout and after
+
+# DoD: rollback restores
+edit server.js greeting -> deploy (full build) -> live "hello from gantry V2"
+POST /projects/{id}/rollback {deployment_id: <baseline>} -> trigger=rollback, image_tag=gantry/hellom2:d-d0cdabe8 (retained), skip-build
+  -> live "hello from gantry"   # restored
+
+# tests: secret (round-trip/nonce/tamper/wrong-key/validation) · store env integration · (+ M2/M3 suites)
+# gates: go vet · gofmt · go test · integration · tsc --noEmit  — all clean
+```
+
+Notes: env vars are applied at container-create, not baked into the image, so rollback restores the *code* (image) while env stays current — matching the spec (rollback reuses a retained image; env changes need a redeploy). Reveal is `POST .../env/reveal` (key in body, not URL) and logged at `warn` with project+key only. `secret.New` failure disables env features (API returns 503) rather than running insecurely. Decision D19 added.
 
 ---
 

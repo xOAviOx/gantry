@@ -26,6 +26,7 @@ import (
 	"github.com/avishuklacode/gantry/services/controld/internal/logs"
 	"github.com/avishuklacode/gantry/services/controld/internal/proxy"
 	"github.com/avishuklacode/gantry/services/controld/internal/queue"
+	"github.com/avishuklacode/gantry/services/controld/internal/secret"
 	"github.com/avishuklacode/gantry/services/controld/internal/store"
 )
 
@@ -79,7 +80,13 @@ func run() error {
 	hub := logs.NewHub(pool, logger)
 	builder := build.New(logger, cfg.BuildTimeout)
 	deployer := deploy.NewDeployer(dc, cfg, logger)
-	orch := deploy.NewOrchestrator(pool, builder, deployer, caddy, hub, cfg, logger)
+
+	box, err := secret.New(cfg.MasterKeyB64)
+	if err != nil {
+		logger.Warn("env-var encryption disabled (set GANTRY_MASTER_KEY)", "err", err)
+		box = nil
+	}
+	orch := deploy.NewOrchestrator(pool, builder, deployer, caddy, hub, box, cfg, logger)
 
 	// Initial Caddy render + load (retry for slow container boot).
 	bootLoadCaddy(ctx, logger, orch)
@@ -127,7 +134,7 @@ func run() error {
 	// HTTP server.
 	srv := &http.Server{
 		Addr:    cfg.ControldAddr,
-		Handler: api.NewRouter(&api.Server{Logger: logger, Pool: pool, Cfg: cfg, Hub: hub}),
+		Handler: api.NewRouter(&api.Server{Logger: logger, Pool: pool, Cfg: cfg, Hub: hub, Secrets: box}),
 	}
 	errCh := make(chan error, 1)
 	go func() {
